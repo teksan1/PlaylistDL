@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+LOG_FILE="/data/data/com.termux/files/home/musicdowlder/app_verbose.log"
+if [ ! -f "$LOG_FILE" ]; then
+    echo "Log file not found. Run ./startapp -verbos first."
+    exit 1
+fi
+echo "📄 Live verbose log (CTRL+C to stop):"
+tail -f "$LOG_FILE"

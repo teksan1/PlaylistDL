@@ -1,48 +1,39 @@
 import os
-from core.pipeline import acquire, yt_dlp_playlist, download_multi
+import json
+import argparse
+import time
+from core import pipeline
+from core import scrape_soundcloud
 from config import CONFIG
-queue = []
 
-# -------------------------
-# Multi-number / range selection
-# -------------------------
-def parse_selection(selection_str, max_len):
-    selected = set()
-    for part in selection_str.split(","):
-        part = part.strip()
-        if '-' in part:
-            try:
-                start, end = map(int, part.split('-'))
-                start = max(1, start)
-                end = min(max_len, end)
-                for i in range(start, end + 1):
-                    selected.add(i - 1)
-            except ValueError:
-                pass
-        else:
-            if part.isdigit():
-                i = int(part)
-                if 1 <= i <= max_len:
-                    selected.add(i - 1)
-    return sorted(selected)
+QUEUE_LIST = []
+VERBOSE_MODE = False
+LOG_FILE = "/tmp/musicdowlder_verbose.log"
 
-# -------------------------
-# Toggles
-# -------------------------
+def log_verbose(msg):
+    if VERBOSE_MODE:
+        timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
+        line = f"{timestamp} {msg}"
+        print(line)
+        with open(LOG_FILE, "a") as f:
+            f.write(line + "\n")
+
 TOGGLE_KEYS = [
     "enable_youtube","enable_soundcloud","enable_duckduckgo",
     "restriction_checks","copyright_checks","analysis_only",
     "allow_downloads","allow_js","js_runtime_ready",
     "enable_js","max_results","download_dir"
 ]
+
 def print_toggles():
     print("\n⚙️ TOGGLES")
-    for i, key in enumerate(TOGGLE_KEYS, 1):
+    for i,key in enumerate(TOGGLE_KEYS,1):
         print(f"{i}) {key}: {CONFIG[key]}")
-    print("\nEnter number to toggle or modify (ENTER to continue)")
+    print("\nEnter number to toggle/modify (ENTER to continue)")
+
 def toggle_option(number):
     if 1 <= number <= len(TOGGLE_KEYS):
-        key = TOGGLE_KEYS[number - 1]
+        key = TOGGLE_KEYS[number-1]
         if isinstance(CONFIG[key], bool):
             CONFIG[key] = not CONFIG[key]
             print(f"{key} set to {CONFIG[key]}")
@@ -52,89 +43,112 @@ def toggle_option(number):
                 CONFIG[key] = new_val
                 print(f"{key} set to {CONFIG[key]}")
             except ValueError:
-                print("Invalid input, must be an integer")
+                print("Invalid input, must be integer")
         elif isinstance(CONFIG[key], str):
             new_val = input(f"Enter new value for {key} (current: {CONFIG[key]}): ")
             CONFIG[key] = new_val
             print(f"{key} set to {CONFIG[key]}")
 
-# -------------------------
-# Add to queue
-# -------------------------
-def add_to_queue_from_search(results):
-    print("\nRESULTS:")
-    for idx, r in enumerate(results, 1):
-        print(f"{idx}) {r['title']} ({r['source']})")
-    sel = input("\nSelect numbers (e.g. 1,4,10-20) or ENTER to skip: ").strip()
-    if not sel:
-        return
-    indexes = parse_selection(sel, len(results))
-    for i in indexes:
-        queue.append(results[i])
-        print(f"Added to queue: {results[i]['title']}")
+def display_queue():
+    if not QUEUE_LIST:
+        print("📭 Queue is empty")
+    else:
+        print("🎵 Current Queue:")
+        for idx,item in enumerate(QUEUE_LIST,1):
+            print(f"{idx}) {item['title']} ({item.get('source','unknown')})")
 
-def add_to_queue_from_playlist(url):
-    tracks = yt_dlp_playlist(url)
-    for t in tracks:
-        queue.append(t)
-        print(f"Added to queue: {t['title']}")
+def parse_selection(selection_str, max_len):
+    if not selection_str.strip():
+        return list(range(max_len))  # all selected if Enter pressed
+    selected = set()
+    for part in selection_str.split(","):
+        part = part.strip()
+        if '-' in part:
+            try:
+                start,end = map(int, part.split('-'))
+                start = max(1,start)
+                end = min(max_len,end)
+                for i in range(start,end+1):
+                    selected.add(i-1)
+            except ValueError:
+                continue
+        elif part.isdigit():
+            i = int(part)
+            if 1 <= i <= max_len:
+                selected.add(i-1)
+    return sorted(selected)
 
-# -------------------------
-# Selective queue download
-# -------------------------
-def process_queue_selection():
-    if not queue:
-        print("Queue is empty!")
-        return
-    print("\nCurrent Queue:")
-    for idx, item in enumerate(queue, 1):
-        print(f"{idx}) {item.get('title')}")
-    sel = input("\nSelect numbers to download (e.g. 452-569) or ENTER to skip: ").strip()
-    if not sel:
-        print("No selection. Skipping download.")
-        return
-    indexes = parse_selection(sel, len(queue))
-    if not indexes:
-        print("⚠️ No valid selection. Nothing downloaded.")
-        return
-    selected_items = [queue[i] for i in indexes]
-    download_multi(selected_items, max_threads=4)
-    for i in sorted(indexes, reverse=True):
-        del queue[i]
+def handle_soundcloud(url):
+    log_verbose(f"Detected SoundCloud URL: {url}")
+    tracks = scrape_soundcloud.scrape_playlist(url)
+    QUEUE_LIST.extend(tracks)
+    log_verbose(f"Added {len(tracks)} tracks from SoundCloud to the queue")
+    display_queue()
+    sc_json = scrape_soundcloud.get_playlist_file_path()
+    if os.path.exists(sc_json):
+        os.remove(sc_json)
+        log_verbose(f"Removed temporary file {sc_json}")
 
-# -------------------------
-# Main CLI loop
-# -------------------------
-def run_cli():
-    print("🎵 MusicFinder CLI — Multi-pane interface with live toggles and playlist support")
+def select_from_queue():
+    if not QUEUE_LIST:
+        print("Queue is empty! Nothing to select.")
+        return []
+    display_queue()
+    sel = input("\nSelect numbers to download (comma/range, ENTER=all): ").strip()
+    selected_indexes = parse_selection(sel, len(QUEUE_LIST))
+    if not selected_indexes:
+        print("⚠️ No valid selection. Going back.")
+        return []
+    # Ask download or skip
+    choice = input(f"Download {len(selected_indexes)} selected items? (y/N): ").strip().lower()
+    if choice != 'y':
+        print("Selection skipped.")
+        return []
+    return selected_indexes
+
+def download_selected(selected_indexes):
+    if not selected_indexes:
+        return
+    items_to_download = [QUEUE_LIST[i] for i in selected_indexes]
+    pipeline.download_multi(items_to_download)
+    for i in sorted(selected_indexes,reverse=True):
+        del QUEUE_LIST[i]
+
+def main_loop():
+    global VERBOSE_MODE
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-verbos", action="store_true", help="Enable verbose logging")
+    args = parser.parse_args()
+    VERBOSE_MODE = args.verbos
+    if VERBOSE_MODE:
+        open(LOG_FILE,"w").close()
+        log_verbose("🎵 MusicDowlder App Started (verbose mode)")
+
     while True:
         print_toggles()
-        choice = input("> ").strip()
-        if choice.isdigit():
-            toggle_option(int(choice))
-            continue
-        query = choice
-        if query.lower() == "q":
-            print("Exiting MusicFinder CLI…")
+        display_queue()
+        try:
+            url = input("\nEnter URL, -d to download, or 'exit' to quit: ").strip()
+        except KeyboardInterrupt:
+            print("\nExiting...")
             break
-        if query.lower() == "-d":
-            process_queue_selection()
+
+        if url.lower() == "exit":
+            break
+        elif url.lower() == "-d":
+            selected = select_from_queue()
+            download_selected(selected)
             continue
-        if query.lower() == "-clear":
-            queue.clear()
-            print("✅ Queue cleared")
-            continue
-        if query.startswith("http") and ("playlist" in query or "list=" in query):
-            add_to_queue_from_playlist(query)
-            continue
-        results = acquire(query)
-        if not results or results[0].get("url") is None:
-            print("❌ No results found.")
+
+        if "soundcloud.com" in url:
+            handle_soundcloud(url)
         else:
-            add_to_queue_from_search(results)
-        print("\nQueue:")
-        for idx, item in enumerate(queue, 1):
-            print(f"{idx}) {item.get('title')}")
+            results = pipeline.acquire(url)
+            if results and results[0].get("url"):
+                QUEUE_LIST.extend(results)
+                display_queue()
+            else:
+                print("❌ No results found.")
 
 if __name__ == "__main__":
-    run_cli()
+    main_loop()

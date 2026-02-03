@@ -2,17 +2,16 @@ import subprocess
 import json
 import os
 import requests
-import threading
-from queue import Queue
-from config import CONFIG
 from bs4 import BeautifulSoup
-from tqdm import tqdm
+from config import CONFIG
+from queue import Queue
+import threading
 
 DOWNLOAD_DIR = CONFIG.get("download_dir", "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # ---------------------------
-# Search (unchanged)
+# YouTube / SoundCloud search using yt-dlp
 # ---------------------------
 def yt_dlp_search(query, source="youtube", limit=5):
     if source == "youtube" and not CONFIG["enable_youtube"]:
@@ -42,11 +41,15 @@ def yt_dlp_search(query, source="youtube", limit=5):
             continue
     return results
 
+# ---------------------------
+# DuckDuckGo fallback
+# ---------------------------
 def duckduckgo_search(query, max_results=5):
     if not CONFIG["enable_duckduckgo"]:
         return []
     search_url = f"https://duckduckgo.com/html/?q={query.replace(' ', '+')}+mp3"
     r = requests.get(search_url, headers={"User-Agent": "Mozilla/5.0"})
+    from bs4 import BeautifulSoup
     soup = BeautifulSoup(r.text, "html.parser")
     results = []
     for a in soup.select("a[href$='.mp3']")[:max_results]:
@@ -58,8 +61,16 @@ def duckduckgo_search(query, max_results=5):
         })
     return results
 
+# ---------------------------
+# Playlist extraction
+# ---------------------------
 def yt_dlp_playlist(url):
-    cmd = ["yt-dlp", "--dump-json", "--flat-playlist", url]
+    cmd = [
+        "yt-dlp",
+        "--dump-json",
+        "--flat-playlist",
+        url
+    ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     tracks = []
     for line in proc.stdout.splitlines():
@@ -67,13 +78,16 @@ def yt_dlp_playlist(url):
             data = json.loads(line)
             tracks.append({
                 "title": data.get("title"),
-                "url": data.get("url") or data.get("webpage_url"),
+                "url": data.get("url") if "url" in data else data.get("webpage_url"),
                 "source": "playlist"
             })
         except json.JSONDecodeError:
             continue
     return tracks
 
+# ---------------------------
+# Acquire tracks from all sources
+# ---------------------------
 def acquire(query):
     results = []
     results += yt_dlp_search(query, "youtube", CONFIG["max_results"])
@@ -84,101 +98,50 @@ def acquire(query):
     return results
 
 # ---------------------------
-# Download with persistent progress bars
+# Multi-threaded download
 # ---------------------------
-def download_worker(queue_items, stats, position_lock):
+def download_worker(queue_items, results):
     while True:
         try:
             item = queue_items.get_nowait()
         except:
-            return
-
-        title = item.get("title", "track")
-        url = item.get("url")
-
-        if CONFIG["analysis_only"] or not CONFIG["allow_downloads"]:
-            with stats["lock"]:
-                stats["skipped"] += 1
-            queue_items.task_done()
-            continue
-
-        with position_lock:
-            pos = stats["bar_index"]
-            stats["bar_index"] += 1
-
-        bar = tqdm(
-            total=100,
-            desc=title[:40],
-            position=pos,
-            leave=True
-        )
-
+            break
         try:
-            cmd = [
-                "yt-dlp",
-                "-x",
-                "--audio-format", "mp3",
-                "--audio-quality", "0",
-                "--newline",
-                "-o", os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s"),
-                url
-            ]
-
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-
-            for line in proc.stdout:
-                if "%" in line:
-                    try:
-                        pct = float(line.split("%")[0].split()[-1])
-                        bar.n = pct
-                        bar.refresh()
-                    except:
-                        pass
-
-            proc.wait()
-            bar.n = 100
-            bar.refresh()
-
-            with stats["lock"]:
-                stats["success"] += 1
-
-        except:
-            with stats["lock"]:
-                stats["failed"] += 1
+            if CONFIG['analysis_only'] or not CONFIG['allow_downloads']:
+                results['skipped'] += 1
+                print(f"Skipped: {item.get('title')}")
+            else:
+                url = item['url']
+                title = item.get('title', 'track')
+                cmd = [
+                    'yt-dlp',
+                    '-x',
+                    '--audio-format', 'mp3',
+                    '--audio-quality', '0',
+                    '-o', os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
+                    url
+                ]
+                subprocess.run(cmd)
+                results['success'] += 1
+                print(f"Downloaded: {title}")
+        except Exception as e:
+            results['failed'] += 1
+            print(f"Failed: {item.get('title')} ({e})")
         finally:
-            bar.close()
             queue_items.task_done()
 
 def download_multi(queue_list, max_threads=4):
     queue_items = Queue()
+    results = {'success': 0, 'failed': 0, 'skipped': 0}
     for item in queue_list:
         queue_items.put(item)
-
-    stats = {
-        "success": 0,
-        "failed": 0,
-        "skipped": 0,
-        "bar_index": 0,
-        "lock": threading.Lock()
-    }
-
-    position_lock = threading.Lock()
     threads = []
-
     for _ in range(min(max_threads, queue_items.qsize())):
-        t = threading.Thread(
-            target=download_worker,
-            args=(queue_items, stats, position_lock),
-            daemon=True
-        )
+        t = threading.Thread(target=download_worker, args=(queue_items, results))
         t.start()
         threads.append(t)
-
     queue_items.join()
-
-    print(
-        f"\n✅ Completed: {stats['success']}/{len(queue_list)} "
-        f"· ❌ Failed: {stats['failed']} · ⏭ Skipped: {stats['skipped']}"
-    )
-
-    return stats
+    for t in threads:
+        t.join()
+    print(f"✅ Download complete. Success: {results['success']}, Failed: {results['failed']}, Skipped: {results['skipped']}")
+    return results

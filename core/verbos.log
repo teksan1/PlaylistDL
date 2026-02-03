@@ -1,0 +1,6 @@
+[2026-02-03 23:09:54] 🎵 MusicDowlder App Started (verbose mode)
+[2026-02-03 23:10:14] 🎧 Detected SoundCloud playlist URL: https://soundcloud.com/user-636564376/sets/april-2024-techno-harder
+[2026-02-03 23:10:14] 🛠 Running: python3 /data/data/com.termux/files/home/musicdowlder/core/scrape_soundcloud.py
+[2026-02-03 23:10:34] ✅ Loaded 59 tracks from SoundCloud playlist
+[2026-02-03 23:10:34] 📋 59 items added to queue
+[2026-02-03 23:20:11] ✅ Finished processing queue
