@@ -1,0 +1,133 @@
+import subprocess
+import json
+import os
+import requests
+from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor
+from config import CONFIG
+
+DOWNLOAD_DIR = CONFIG.get("download_dir", "downloads")
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+# ---------------------------
+# YouTube / SoundCloud search using yt-dlp
+# ---------------------------
+def yt_dlp_search(query, source="youtube", limit=5):
+    if source == "youtube" and not CONFIG["enable_youtube"]:
+        return []
+    if source == "soundcloud" and not CONFIG["enable_soundcloud"]:
+        return []
+
+    cmd = [
+        "yt-dlp",
+        f"{source}search{limit}:{query}",
+        "--dump-json",
+        "--skip-download",
+        "--no-playlist"
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    results = []
+    for line in proc.stdout.splitlines():
+        try:
+            data = json.loads(line)
+            results.append({
+                "title": data.get("title"),
+                "url": data.get("webpage_url"),
+                "source": data.get("extractor"),
+                "duration": data.get("duration")
+            })
+        except json.JSONDecodeError:
+            continue
+    return results
+
+# ---------------------------
+# DuckDuckGo fallback
+# ---------------------------
+def duckduckgo_search(query, max_results=5):
+    if not CONFIG["enable_duckduckgo"]:
+        return []
+    search_url = f"https://duckduckgo.com/html/?q={query.replace(' ', '+')}+mp3"
+    r = requests.get(search_url, headers={"User-Agent": "Mozilla/5.0"})
+    soup = BeautifulSoup(r.text, "html.parser")
+    results = []
+    for a in soup.select("a[href$='.mp3']")[:max_results]:
+        results.append({
+            "title": os.path.basename(a['href']),
+            "url": a['href'],
+            "source": "duckduckgo",
+            "duration": None
+        })
+    return results
+
+# ---------------------------
+# Playlist extraction
+# ---------------------------
+def yt_dlp_playlist(url):
+    cmd = [
+        "yt-dlp",
+        "--dump-json",
+        "--flat-playlist",
+        url
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    tracks = []
+    for line in proc.stdout.splitlines():
+        try:
+            data = json.loads(line)
+            tracks.append({
+                "title": data.get("title"),
+                "url": data.get("url") if "url" in data else data.get("webpage_url"),
+                "source": "playlist"
+            })
+        except json.JSONDecodeError:
+            continue
+    return tracks
+
+# ---------------------------
+# Acquire tracks from all sources
+# ---------------------------
+def acquire(query):
+    results = []
+    results += yt_dlp_search(query, "youtube", CONFIG["max_results"])
+    results += yt_dlp_search(query, "soundcloud", CONFIG["max_results"])
+    results += duckduckgo_search(query, CONFIG["max_results"])
+    if not results:
+        return [{"title": "No results found", "url": None, "source": "none"}]
+    return results
+
+# ---------------------------
+# Download a track
+# ---------------------------
+def download(item_or_url):
+    if CONFIG["analysis_only"]:
+        return f"Analysis-only mode: skipping download"
+    if not CONFIG["allow_downloads"]:
+        return f"Downloads disabled by toggle"
+
+    if isinstance(item_or_url, dict):
+        url = item_or_url["url"]
+        title = item_or_url.get("title", "track")
+    else:
+        url = item_or_url
+        title = "track"
+
+    cmd = [
+        "yt-dlp",
+        "-x",
+        "--audio-format", "mp3",
+        "--audio-quality", "0",
+        "-o", os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s"),
+        url
+    ]
+    subprocess.run(cmd)
+    return f"Downloaded: {title}"
+
+# ---------------------------
+# Process queue
+# ---------------------------
+def process_queue(queue):
+    max_workers = CONFIG.get("max_workers", 4)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for item in queue:
+            executor.submit(download, item)
