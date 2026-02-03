@@ -76,33 +76,12 @@ def yt_dlp_playlist(url):
 
 def acquire(query):
     results = []
-
-    # --- RESTORED: YouTube URL auto-detection ---
-    if isinstance(query, str) and ("youtube.com" in query or "youtu.be" in query):
-        # Playlist URL
-        if "list=" in query or "playlist" in query:
-            try:
-                return yt_dlp_playlist(query)
-            except Exception:
-                pass
-        # Single video URL
-        else:
-            try:
-                results += yt_dlp_search(query, "youtube", 1)
-                return results
-            except Exception:
-                pass
-
-    # --- Existing logic untouched ---
     results += yt_dlp_search(query, "youtube", CONFIG["max_results"])
     results += yt_dlp_search(query, "soundcloud", CONFIG["max_results"])
     results += duckduckgo_search(query, CONFIG["max_results"])
-
     if not results:
         return [{"title": "No results found", "url": None, "source": "none"}]
-
     return results
-
 
 # ---------------------------
 # Download with persistent progress bars
