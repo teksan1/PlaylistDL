@@ -7,12 +7,9 @@ from core import pipeline
 from core import scrape_soundcloud
 from config import CONFIG
 
-# Global state
 QUEUE_LIST = []
 VERBOSE_MODE = False
 LOG_FILE = "/tmp/musicdowlder_verbose.log"
-DOWNLOAD_IN_PROGRESS = False
-STOP_AFTER_CURRENT = False
 
 TOGGLE_KEYS = [
     "enable_youtube","enable_soundcloud","enable_duckduckgo",
@@ -20,8 +17,6 @@ TOGGLE_KEYS = [
     "allow_downloads","allow_js","js_runtime_ready",
     "enable_js","max_results","download_dir"
 ]
-
-# ------------------ Utilities ------------------
 
 def log_verbose(msg):
     if VERBOSE_MODE:
@@ -33,7 +28,7 @@ def log_verbose(msg):
 
 def print_toggles():
     print("\n⚙️ TOGGLES")
-    for i, key in enumerate(TOGGLE_KEYS, 1):
+    for i,key in enumerate(TOGGLE_KEYS,1):
         print(f"{i}) {key}: {CONFIG[key]}")
     print("\nEnter number to toggle/modify (ENTER to continue)")
 
@@ -60,7 +55,7 @@ def display_queue():
         print("📭 Queue is empty")
     else:
         print("🎵 Current Queue:")
-        for idx, item in enumerate(QUEUE_LIST, 1):
+        for idx,item in enumerate(QUEUE_LIST,1):
             print(f"{idx}) {item['title']} ({item.get('source','unknown')})")
 
 def parse_selection(selection_str, max_len):
@@ -71,10 +66,10 @@ def parse_selection(selection_str, max_len):
         part = part.strip()
         if '-' in part:
             try:
-                start, end = map(int, part.split('-'))
-                start = max(1, start)
-                end = min(max_len, end)
-                for i in range(start, end+1):
+                start,end = map(int, part.split('-'))
+                start = max(1,start)
+                end = min(max_len,end)
+                for i in range(start,end+1):
                     selected.add(i-1)
             except ValueError:
                 continue
@@ -83,8 +78,6 @@ def parse_selection(selection_str, max_len):
             if 1 <= i <= max_len:
                 selected.add(i-1)
     return sorted(selected)
-
-# ------------------ Core Handlers ------------------
 
 def handle_soundcloud(url):
     log_verbose(f"Detected SoundCloud URL: {url}")
@@ -114,26 +107,15 @@ def select_from_queue():
     return selected_indexes
 
 def download_selected(selected_indexes):
-    global DOWNLOAD_IN_PROGRESS, STOP_AFTER_CURRENT
     if not selected_indexes:
         return
-
-    DOWNLOAD_IN_PROGRESS = True
     items_to_download = [QUEUE_LIST[i] for i in selected_indexes]
-
-    for item in items_to_download:
-        if STOP_AFTER_CURRENT:
-            break
-        pipeline.download_multi([item])
-
-    DOWNLOAD_IN_PROGRESS = False
-    STOP_AFTER_CURRENT = False
-
-    for i in sorted(selected_indexes, reverse=True):
-        if i < len(QUEUE_LIST):
-            del QUEUE_LIST[i]
+    pipeline.download_multi(items_to_download)
+    for i in sorted(selected_indexes,reverse=True):
+        del QUEUE_LIST[i]
 
 def fetch_youtube_playlist(playlist_url):
+    """Fetch all video URLs and titles from a YouTube playlist using yt-dlp JSON."""
     import subprocess, json, re
     playlist_url = re.sub(r"&si=.*$", "", playlist_url)
     try:
@@ -154,149 +136,36 @@ def fetch_youtube_playlist(playlist_url):
         print(f"❌ Failed to fetch playlist: {e}")
         return []
 
-# ------------------ Options & Help ------------------
-
-def options_menu():
-    while True:
-        try:
-            url = input("
-Enter URL, -d to download, -c to clear, -e to exit, -o for options, -b for backup: ").strip()
-        except KeyboardInterrupt:
-            confirm = input("Exit MusicDowlder? (y/N): ").strip().lower()
-            if confirm == "y":
-                print("👋 Exiting...")
-                break
-            continue
-        
-        if url.lower() == "-b":
-            import subprocess;
-            download_dir = CONFIG.get("download_dir","");
-            exclude_dirs = [download_dir] if download_dir else [];
-            env = os.environ.copy();
-            env["EXCLUDE_DIRS"] = ":".join(exclude_dirs);
-            subprocess.run(["python3", str(Path(PROJECT_DIR)/"backups"/"backup_manager.py")], env=env);
-            continue
-        print("\n⚙️ OPTIONS\n")
-        for i, key in enumerate(TOGGLE_KEYS, 1):
-            print(f"{i}) {key}: {CONFIG[key]}")
-        print("\nd) Change download directory")
-        print("ENTER) Return to main menu")
-
-        choice = input("\nSelect option: ").strip().lower()
-
-        if choice == "":
-            return
-        if choice == "d":
-            current = CONFIG.get("download_dir", "")
-            print(f"\nCurrent download directory:\n{current}")
-            new_path = input("Enter new download directory path (ENTER to cancel): ").strip()
-            if not new_path:
-                continue
-            os.makedirs(new_path, exist_ok=True)
-            CONFIG["download_dir"] = new_path
-            print(f"✅ Download directory set to: {new_path}")
-            continue
-        if choice.isdigit():
-            toggle_option(int(choice))
-            continue
-
-        print("❌ Invalid option")
-
-def print_help():
-    print("""
-📖 MusicDowlder Help
-Commands:
-  -o   Open options / toggles menu
-  -d   Download from current queue
-  -c   Clear queue
-  -e   Exit application
-  -h   Show this help screen
-
-Usage:
-  • Paste URL to add tracks
-  • Use -o to configure options
-  • Use -d to download from queue
-  • Use -c to clear queue
-  • Use -e to exit cleanly
-""")
-
-# ------------------ Main Loop ------------------
-
 def main_loop():
-    global VERBOSE_MODE, STOP_AFTER_CURRENT
+    global VERBOSE_MODE
     parser = argparse.ArgumentParser()
     parser.add_argument("-verbos", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
-
+# --------- Command Block: Clear Queue (-c) ---------
+if args.clear:
+    print("🧹 Clearing download queue...")
+    pipeline.clear_queue()   # Clear all pending downloads
+    print("✅ Queue cleared. Returning to start.
+")
+    continue  # Go back to the start of the CLI loop
+# ----------------------------------------------------
     VERBOSE_MODE = args.verbos
     if VERBOSE_MODE:
         open(LOG_FILE,"w").close()
         log_verbose("🎵 MusicDowlder App Started (verbose mode)")
 
     while True:
-        try:
-            url = input("
-Enter URL, -d to download, -c to clear, -e to exit, -o for options, -b for backup: ").strip()
-        except KeyboardInterrupt:
-            confirm = input("Exit MusicDowlder? (y/N): ").strip().lower()
-            if confirm == "y":
-                print("👋 Exiting...")
-                break
-            continue
-        
-        if url.lower() == "-b":
-            import subprocess;
-            download_dir = CONFIG.get("download_dir","");
-            exclude_dirs = [download_dir] if download_dir else [];
-            env = os.environ.copy();
-            env["EXCLUDE_DIRS"] = ":".join(exclude_dirs);
-            subprocess.run(["python3", str(Path(PROJECT_DIR)/"backups"/"backup_manager.py")], env=env);
-            continue
         print_toggles()
         display_queue()
-
         try:
-            url = input("\nEnter URL, -d to download, -c to clear, -e to exit, -o for options, -h for help: ").strip()
+            url = input("\nEnter URL, -d to download, or 'exit' to quit: ").strip()
         except KeyboardInterrupt:
-            print()
-            confirm = input("Exit MusicDowlder? (y/N): ").strip().lower()
-            if confirm == "y":
-                print("👋 Exiting...")
-                break
-            continue
+            print("\nExiting...")
+            break
 
-        if url.lower() == "-h":
-            print_help()
-            continue
-
-        if url.lower() == "-o":
-            options_menu()
-            continue
-
-        if url.lower() == "-c":
-            if DOWNLOAD_IN_PROGRESS:
-                print("\n⚠️ Downloads are currently running.")
-                confirm = input("Stop after current downloads finish and clear queue? (y/N): ").strip().lower()
-                if confirm != "y":
-                    print("▶️ Downloads will continue.\n")
-                    continue
-                print("🛑 Will stop starting new downloads...")
-                STOP_AFTER_CURRENT = True
-                QUEUE_LIST.clear()
-                print("🧹 Queue cleared. Returning to start.\n")
-                continue
-            QUEUE_LIST.clear()
-            print("🧹 Queue cleared. Returning to start.\n")
-            continue
-
-        if url.lower() == "-e":
-            confirm = input("Exit MusicDowlder? (y/N): ").strip().lower()
-            if confirm == "y":
-                print("👋 Exiting...")
-                break
-            continue
-
-        if url.lower() == "-d":
+        if url.lower() == "exit":
+            break
+        elif url.lower() == "-d":
             selected = select_from_queue()
             download_selected(selected)
             continue
