@@ -1,7 +1,6 @@
 import subprocess
 import json
 import os
-import requests
 import threading
 from queue import Queue
 from config import CONFIG
@@ -11,22 +10,12 @@ from tqdm import tqdm
 DOWNLOAD_DIR = CONFIG.get("download_dir", "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# ---------------------------
-# Search (unchanged)
-# ---------------------------
 def yt_dlp_search(query, source="youtube", limit=5):
     if source == "youtube" and not CONFIG["enable_youtube"]:
         return []
     if source == "soundcloud" and not CONFIG["enable_soundcloud"]:
         return []
-
-    cmd = [
-        "yt-dlp",
-        f"{source}search{limit}:{query}",
-        "--dump-json",
-        "--skip-download",
-        "--no-playlist"
-    ]
+    cmd = ["yt-dlp", f"{source}search{limit}:{query}", "--dump-json", "--skip-download", "--no-playlist"]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     results = []
     for line in proc.stdout.splitlines():
@@ -43,8 +32,9 @@ def yt_dlp_search(query, source="youtube", limit=5):
     return results
 
 def duckduckgo_search(query, max_results=5):
-    if not CONFIG["enable_duckduckgo"]:
+    if not CONFIG.get("enable_duckduckgo", True):
         return []
+    import requests
     search_url = f"https://duckduckgo.com/html/?q={query.replace(' ', '+')}+mp3"
     r = requests.get(search_url, headers={"User-Agent": "Mozilla/5.0"})
     soup = BeautifulSoup(r.text, "html.parser")
@@ -58,22 +48,6 @@ def duckduckgo_search(query, max_results=5):
         })
     return results
 
-def yt_dlp_playlist(url):
-    cmd = ["yt-dlp", "--dump-json", "--flat-playlist", url]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    tracks = []
-    for line in proc.stdout.splitlines():
-        try:
-            data = json.loads(line)
-            tracks.append({
-                "title": data.get("title"),
-                "url": data.get("url") or data.get("webpage_url"),
-                "source": "playlist"
-            })
-        except json.JSONDecodeError:
-            continue
-    return tracks
-
 def acquire(query):
     results = []
     results += yt_dlp_search(query, "youtube", CONFIG["max_results"])
@@ -83,65 +57,41 @@ def acquire(query):
         return [{"title": "No results found", "url": None, "source": "none"}]
     return results
 
-# ---------------------------
-# Download with persistent progress bars
-# ---------------------------
 def download_worker(queue_items, stats, position_lock):
     while True:
         try:
             item = queue_items.get_nowait()
         except:
             return
-
         title = item.get("title", "track")
         url = item.get("url")
-
-        if CONFIG["analysis_only"] or not CONFIG["allow_downloads"]:
+        if CONFIG.get("analysis_only") or not CONFIG.get("allow_downloads"):
             with stats["lock"]:
                 stats["skipped"] += 1
             queue_items.task_done()
             continue
-
         with position_lock:
             pos = stats["bar_index"]
             stats["bar_index"] += 1
-
-        bar = tqdm(
-            total=100,
-            desc=title[:40],
-            position=pos,
-            leave=True
-        )
-
+            bar = tqdm(total=100, desc=title[:40], position=pos, leave=True)
         try:
             cmd = [
-                "yt-dlp",
-                "-x",
-                "--audio-format", "mp3",
-                "--audio-quality", "0",
-                "--newline",
-                "-o", os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s"),
-                url
+                "yt-dlp", "-x", "--audio-format", "mp3", "--audio-quality", "0",
+                "--newline", "-o", os.path.join(CONFIG.get("download_dir","downloads"), "%(title)s.%(ext)s"), url
             ]
-
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-
             for line in proc.stdout:
                 if "%" in line:
                     try:
                         pct = float(line.split("%")[0].split()[-1])
                         bar.n = pct
                         bar.refresh()
-                    except:
-                        pass
-
+                    except: pass
             proc.wait()
             bar.n = 100
             bar.refresh()
-
             with stats["lock"]:
                 stats["success"] += 1
-
         except:
             with stats["lock"]:
                 stats["failed"] += 1
@@ -149,36 +99,18 @@ def download_worker(queue_items, stats, position_lock):
             bar.close()
             queue_items.task_done()
 
-def download_multi(queue_list, max_threads=4):
+def download_multi(queue_list):
+    max_threads = CONFIG.get("max_threads", 4)
     queue_items = Queue()
     for item in queue_list:
         queue_items.put(item)
-
-    stats = {
-        "success": 0,
-        "failed": 0,
-        "skipped": 0,
-        "bar_index": 0,
-        "lock": threading.Lock()
-    }
-
+    stats = {"success":0,"failed":0,"skipped":0,"bar_index":0,"lock":threading.Lock()}
     position_lock = threading.Lock()
     threads = []
-
     for _ in range(min(max_threads, queue_items.qsize())):
-        t = threading.Thread(
-            target=download_worker,
-            args=(queue_items, stats, position_lock),
-            daemon=True
-        )
+        t = threading.Thread(target=download_worker, args=(queue_items, stats, position_lock), daemon=True)
         t.start()
         threads.append(t)
-
     queue_items.join()
-
-    print(
-        f"\n✅ Completed: {stats['success']}/{len(queue_list)} "
-        f"· ❌ Failed: {stats['failed']} · ⏭ Skipped: {stats['skipped']}"
-    )
-
+    print(f"\n✅ Completed: {stats['success']}/{len(queue_list)} · ❌ Failed: {stats['failed']} · ⏭ Skipped: {stats['skipped']}")
     return stats

@@ -1,0 +1,13 @@
+{
+  "allow_downloads": true,
+  "restriction_checks": false,
+  "enable_youtube": true,
+  "enable_soundcloud": true,
+  "edit_metadata": true,
+  "allow_js": true,
+  "js_runtime_ready": true,
+  "enable_js": true,
+  "max_results": 1000,
+  "download_dir": "/storage/emulated/0/Music/PlaylistDL Downloads",
+  "max_threads": 8
+}
