@@ -3,9 +3,12 @@ import os
 import json
 import argparse
 import time
+from pathlib import Path
 from core import pipeline
 from core import scrape_soundcloud
 from config import CONFIG
+import subprocess
+import re
 
 # Global state
 QUEUE_LIST = []
@@ -13,6 +16,8 @@ VERBOSE_MODE = False
 LOG_FILE = "/tmp/musicdowlder_verbose.log"
 DOWNLOAD_IN_PROGRESS = False
 STOP_AFTER_CURRENT = False
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 TOGGLE_KEYS = [
     "enable_youtube","enable_soundcloud","enable_duckduckgo",
@@ -22,7 +27,6 @@ TOGGLE_KEYS = [
 ]
 
 # ------------------ Utilities ------------------
-
 def log_verbose(msg):
     if VERBOSE_MODE:
         timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
@@ -34,32 +38,29 @@ def log_verbose(msg):
 def print_toggles():
     print("\n⚙️ TOGGLES")
     for i, key in enumerate(TOGGLE_KEYS, 1):
-        print(f"{i}) {key}: {CONFIG[key]}")
-    print("\nEnter number to toggle/modify (ENTER to continue)")
+        print(f"{i}) {key}: {CONFIG.get(key)}")
+    print("\n(ENTER to return)")
 
 def toggle_option(number):
     if 1 <= number <= len(TOGGLE_KEYS):
         key = TOGGLE_KEYS[number-1]
-        if isinstance(CONFIG[key], bool):
-            CONFIG[key] = not CONFIG[key]
+        val = CONFIG.get(key)
+        if isinstance(val, bool):
+            CONFIG[key] = not val
             print(f"{key} set to {CONFIG[key]}")
-        elif isinstance(CONFIG[key], int):
+        elif isinstance(val, int):
             try:
-                new_val = int(input(f"Enter new value for {key} (current: {CONFIG[key]}): "))
-                CONFIG[key] = new_val
-                print(f"{key} set to {CONFIG[key]}")
+                CONFIG[key] = int(input(f"Enter new value for {key} (current: {CONFIG[key]}): "))
             except ValueError:
-                print("Invalid input, must be integer")
-        elif isinstance(CONFIG[key], str):
-            new_val = input(f"Enter new value for {key} (current: {CONFIG[key]}): ")
-            CONFIG[key] = new_val
-            print(f"{key} set to {CONFIG[key]}")
+                print("❌ Invalid integer")
+        elif isinstance(val, str):
+            CONFIG[key] = input(f"Enter new value for {key} (current: {CONFIG[key]}): ")
 
 def display_queue():
     if not QUEUE_LIST:
         print("📭 Queue is empty")
     else:
-        print("🎵 Current Queue:")
+        print("\n🎵 Current Queue:")
         for idx, item in enumerate(QUEUE_LIST, 1):
             print(f"{idx}) {item['title']} ({item.get('source','unknown')})")
 
@@ -85,7 +86,6 @@ def parse_selection(selection_str, max_len):
     return sorted(selected)
 
 # ------------------ Core Handlers ------------------
-
 def handle_soundcloud(url):
     log_verbose(f"Detected SoundCloud URL: {url}")
     tracks = scrape_soundcloud.scrape_playlist(url)
@@ -117,89 +117,64 @@ def download_selected(selected_indexes):
     global DOWNLOAD_IN_PROGRESS, STOP_AFTER_CURRENT
     if not selected_indexes:
         return
-
     DOWNLOAD_IN_PROGRESS = True
     items_to_download = [QUEUE_LIST[i] for i in selected_indexes]
-
     for item in items_to_download:
         if STOP_AFTER_CURRENT:
             break
         pipeline.download_multi([item])
-
     DOWNLOAD_IN_PROGRESS = False
     STOP_AFTER_CURRENT = False
-
     for i in sorted(selected_indexes, reverse=True):
         if i < len(QUEUE_LIST):
             del QUEUE_LIST[i]
 
+# ------------------ YouTube Playlist Fetch ------------------
 def fetch_youtube_playlist(playlist_url):
-    import subprocess, json, re
     playlist_url = re.sub(r"&si=.*$", "", playlist_url)
+    tracks = []
     try:
         result = subprocess.run(
-            ["yt-dlp", "--flat-playlist", "-J", playlist_url],
-            capture_output=True,
-            text=True,
-            check=True
+            ["yt-dlp", "--flat-playlist", "-J", "--js-runtimes", "node", "--remote-components", "ejs:github", playlist_url],
+            capture_output=True, text=True, check=True
         )
         data = json.loads(result.stdout)
-        tracks = []
         for e in data.get("entries", []):
-            url = "https://www.youtube.com/watch?v=" + e.get("id", "")
+            vid_id = e.get("id")
+            if not vid_id:
+                continue
+            url = f"https://www.youtube.com/watch?v={vid_id}"
             title = e.get("title") or url
             tracks.append({"title": title, "url": url, "source": "youtube"})
-        return tracks
+    except subprocess.CalledProcessError as e:
+        out = e.stdout + e.stderr
+        for line in out.splitlines():
+            if "Private video" in line or "Video unavailable" in line:
+                continue
+        if not tracks:
+            print(f"❌ Failed to fetch playlist (some videos skipped)")
     except Exception as e:
         print(f"❌ Failed to fetch playlist: {e}")
-        return []
+    return tracks
 
-# ------------------ Options & Help ------------------
-
+# ------------------ Options Menu ------------------
 def options_menu():
     while True:
-        try:
-            url = input("
-Enter URL, -d to download, -c to clear, -e to exit, -o for options, -b for backup: ").strip()
-        except KeyboardInterrupt:
-            confirm = input("Exit MusicDowlder? (y/N): ").strip().lower()
-            if confirm == "y":
-                print("👋 Exiting...")
-                break
-            continue
-        
-        if url.lower() == "-b":
-            import subprocess;
-            download_dir = CONFIG.get("download_dir","");
-            exclude_dirs = [download_dir] if download_dir else [];
-            env = os.environ.copy();
-            env["EXCLUDE_DIRS"] = ":".join(exclude_dirs);
-            subprocess.run(["python3", str(Path(PROJECT_DIR)/"backups"/"backup_manager.py")], env=env);
-            continue
-        print("\n⚙️ OPTIONS\n")
-        for i, key in enumerate(TOGGLE_KEYS, 1):
-            print(f"{i}) {key}: {CONFIG[key]}")
+        print_toggles()
         print("\nd) Change download directory")
-        print("ENTER) Return to main menu")
-
-        choice = input("\nSelect option: ").strip().lower()
-
+        choice = input("\nSelect option (ENTER to return): ").strip().lower()
         if choice == "":
             return
         if choice == "d":
-            current = CONFIG.get("download_dir", "")
-            print(f"\nCurrent download directory:\n{current}")
-            new_path = input("Enter new download directory path (ENTER to cancel): ").strip()
-            if not new_path:
-                continue
-            os.makedirs(new_path, exist_ok=True)
-            CONFIG["download_dir"] = new_path
-            print(f"✅ Download directory set to: {new_path}")
+            new_path = input("Enter new download directory: ").strip()
+            if new_path:
+                os.makedirs(new_path, exist_ok=True)
+                CONFIG["download_dir"] = new_path
+                print(f"✅ Download directory set to: {new_path}")
             continue
         if choice.isdigit():
             toggle_option(int(choice))
             continue
-
         print("❌ Invalid option")
 
 def print_help():
@@ -211,113 +186,82 @@ Commands:
   -c   Clear queue
   -e   Exit application
   -h   Show this help screen
-
-Usage:
-  • Paste URL to add tracks
-  • Use -o to configure options
-  • Use -d to download from queue
-  • Use -c to clear queue
-  • Use -e to exit cleanly
 """)
 
 # ------------------ Main Loop ------------------
-
 def main_loop():
     global VERBOSE_MODE, STOP_AFTER_CURRENT
     parser = argparse.ArgumentParser()
-    parser.add_argument("-verbos", action="store_true", help="Enable verbose logging")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = parser.parse_args()
-
-    VERBOSE_MODE = args.verbos
+    VERBOSE_MODE = args.verbose
     if VERBOSE_MODE:
         open(LOG_FILE,"w").close()
         log_verbose("🎵 MusicDowlder App Started (verbose mode)")
 
     while True:
         try:
-            url = input("
-Enter URL, -d to download, -c to clear, -e to exit, -o for options, -b for backup: ").strip()
+            cmd = input(
+                "Enter URL or command:\n"
+                "-d download\n"
+                "-c clear\n"
+                "-e exit\n"
+                "-o options\n"
+                "-b backup\n> "
+            ).strip()
         except KeyboardInterrupt:
-            confirm = input("Exit MusicDowlder? (y/N): ").strip().lower()
-            if confirm == "y":
+            if input("Exit? (y/N): ").strip().lower() == "y":
                 print("👋 Exiting...")
                 break
-            continue
-        
-        if url.lower() == "-b":
-            import subprocess;
-            download_dir = CONFIG.get("download_dir","");
-            exclude_dirs = [download_dir] if download_dir else [];
-            env = os.environ.copy();
-            env["EXCLUDE_DIRS"] = ":".join(exclude_dirs);
-            subprocess.run(["python3", str(Path(PROJECT_DIR)/"backups"/"backup_manager.py")], env=env);
-            continue
-        print_toggles()
-        display_queue()
-
-        try:
-            url = input("\nEnter URL, -d to download, -c to clear, -e to exit, -o for options, -h for help: ").strip()
-        except KeyboardInterrupt:
             print()
-            confirm = input("Exit MusicDowlder? (y/N): ").strip().lower()
-            if confirm == "y":
-                print("👋 Exiting...")
-                break
             continue
 
-        if url.lower() == "-h":
-            print_help()
+        if not cmd:
             continue
-
-        if url.lower() == "-o":
+        if cmd == "-o":
             options_menu()
             continue
-
-        if url.lower() == "-c":
+        if cmd == "-c":
             if DOWNLOAD_IN_PROGRESS:
-                print("\n⚠️ Downloads are currently running.")
-                confirm = input("Stop after current downloads finish and clear queue? (y/N): ").strip().lower()
-                if confirm != "y":
-                    print("▶️ Downloads will continue.\n")
-                    continue
-                print("🛑 Will stop starting new downloads...")
                 STOP_AFTER_CURRENT = True
-                QUEUE_LIST.clear()
-                print("🧹 Queue cleared. Returning to start.\n")
-                continue
             QUEUE_LIST.clear()
-            print("🧹 Queue cleared. Returning to start.\n")
+            print("🧹 Queue cleared.")
             continue
-
-        if url.lower() == "-e":
-            confirm = input("Exit MusicDowlder? (y/N): ").strip().lower()
-            if confirm == "y":
+        if cmd == "-e":
+            if input("Exit? (y/N): ").strip().lower() == "y":
                 print("👋 Exiting...")
                 break
             continue
-
-        if url.lower() == "-d":
+        if cmd == "-d":
             selected = select_from_queue()
             download_selected(selected)
             continue
-
-        if "soundcloud.com" in url:
-            handle_soundcloud(url)
-        elif "youtube.com/playlist" in url:
-            tracks = fetch_youtube_playlist(url)
+        if cmd == "-b":
+            # Call backup script
+            download_dir = CONFIG.get("download_dir","")
+            exclude_dirs = [download_dir] if download_dir else []
+            env = os.environ.copy()
+            env["EXCLUDE_DIRS"] = ":".join(exclude_dirs)
+            subprocess.run(["python3", str(Path(PROJECT_DIR)/"backups"/"backup_manager.py")], env=env)
+            continue
+        if "soundcloud.com" in cmd:
+            handle_soundcloud(cmd)
+            continue
+        if "youtube.com/playlist" in cmd:
+            tracks = fetch_youtube_playlist(cmd)
             if tracks:
                 QUEUE_LIST.extend(tracks)
-                print(f"✅ Added {len(tracks)} tracks from YouTube playlist to queue")
+                print(f"✅ Added {len(tracks)} tracks from YouTube playlist")
                 display_queue()
             else:
                 print("❌ No results found.")
+            continue
+        results = pipeline.acquire(cmd)
+        if results and results[0].get("url"):
+            QUEUE_LIST.extend(results)
+            display_queue()
         else:
-            results = pipeline.acquire(url)
-            if results and results[0].get("url"):
-                QUEUE_LIST.extend(results)
-                display_queue()
-            else:
-                print("❌ No results found.")
+            print("❌ No results found.")
 
 if __name__ == "__main__":
     main_loop()
