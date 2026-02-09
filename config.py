@@ -1,44 +1,41 @@
+#!/usr/bin/env python3
 import json
+import os
 from pathlib import Path
 
-# ------------------- Core Defaults -------------------
-ENABLE_REAL_DOWNLOAD = True
-ENABLE_CHECKS = False
-ENABLE_YOUTUBE = True
-ENABLE_SOUNDCLOUD = True
-ENABLE_METADATA_EDIT = True
+CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
 
-# ------------------- Persistent Config -------------------
-CONFIG_FILE = Path(__file__).parent / "user_config.json"
-
+# Default configuration
 CONFIG = {
-    "allow_downloads": ENABLE_REAL_DOWNLOAD,
-    "restriction_checks": ENABLE_CHECKS,
-    "enable_youtube": ENABLE_YOUTUBE,
-    "enable_soundcloud": ENABLE_SOUNDCLOUD,
-    "edit_metadata": ENABLE_METADATA_EDIT,
-    "allow_js": True,
-    "js_runtime_ready": True,
-    "enable_js": True,
-    "max_results": 1000,
-    "download_dir": "downloads",
-    "max_threads": 4
+    "enable_youtube": True,
+    "enable_soundcloud": True,
+    "enable_duckduckgo": True,
+    "restriction_checks": True,
+    "copyright_checks": True,
+    "analysis_only": False,
+    "allow_downloads": True,
+    "allow_js": False,
+    "js_runtime_ready": False,
+    "enable_js": False,
+    "max_results": 10,
+    "download_dir": str(Path.home() / "Music"),
+    "max_threads": 4,
 }
 
-# ------------------- Save / Load Helpers -------------------
-def save_config(cfg=None):
-    cfg = cfg or CONFIG
-    try:
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(cfg, f, indent=2)
-    except Exception as e:
-        print(f"❌ Failed to save config: {e}")
-
 def load_config():
+    global CONFIG
     if CONFIG_FILE.exists():
         try:
-            with open(CONFIG_FILE, "r") as f:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                CONFIG.update(data)
-        except Exception as e:
-            print(f"❌ Failed to load config: {e}")
+                if isinstance(data, dict):
+                    CONFIG.update(data)
+        except Exception:
+            pass
+
+def save_config():
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(CONFIG, f, indent=2)
+    except Exception:
+        pass
