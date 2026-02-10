@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""
+PlaylistDL Backup & Restore
+Always interactive
+Run with:
+    python3 backup-restore --backup
+    python3 backup-restore --restore
+Or just:
+    python3 backup-restore
+"""
+
+import os
+import sys
+import subprocess
+from pathlib import Path
+from datetime import datetime
+
+APP_DIR = Path("/data/data/com.termux/files/home/storage/shared/Gitapp/My-apps/PlaylistDL")
+BACKUP_DIR = APP_DIR / "backups"
+BACKUP_DIR.mkdir(exist_ok=True)
+
+def get_choice(prompt, choices):
+    """Prompt the user until a valid choice is entered"""
+    while True:
+        choice = input(prompt).strip()
+        if choice in choices:
+            return choice
+        print(f"❌ Invalid choice. Options: {choices}")
+
+def backup_workflow():
+    print("\n🟢 PlaylistDL Backup Workflow")
+    print("Select what to back up:")
+    print("1️⃣  Full PlaylistDL (excluding downloads/ and backups/)")
+    print("2️⃣  Specific folder")
+    print("3️⃣  Specific file")
+    choice = get_choice("Enter 1, 2, or 3: ", ["1","2","3"])
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = BACKUP_DIR / f"backup_{timestamp}"
+    backup_path.mkdir()
+    
+    if choice == "1":
+        print("Backing up entire PlaylistDL...")
+        subprocess.run([
+            "rsync", "-a", "--progress",
+            str(APP_DIR) + "/", str(backup_path) + "/",
+            "--exclude", str(BACKUP_DIR),
+            "--exclude", str(APP_DIR / "downloads")
+        ])
+    elif choice == "2":
+        folders = [f.name for f in APP_DIR.iterdir() if f.is_dir()]
+        print("Available folders:", ", ".join(folders))
+        folder = input("Enter folder name: ").strip()
+        if (APP_DIR / folder).is_dir():
+            subprocess.run(["rsync", "-a", "--progress", str(APP_DIR / folder), str(backup_path / folder)])
+        else:
+            print("❌ Folder not found. Exiting.")
+            return
+    elif choice == "3":
+        files = [f.name for f in APP_DIR.iterdir() if f.is_file()]
+        print("Available files:", ", ".join(files))
+        file = input("Enter file name: ").strip()
+        if (APP_DIR / file).is_file():
+            subprocess.run(["rsync", "-a", "--progress", str(APP_DIR / file), str(backup_path / file)])
+        else:
+            print("❌ File not found. Exiting.")
+            return
+
+    # Compress backup
+    archive = BACKUP_DIR / f"backup_{timestamp}.tar.gz"
+    print(f"Compressing backup to {archive}...")
+    subprocess.run(["tar", "-czf", str(archive), "-C", str(BACKUP_DIR), f"backup_{timestamp}"])
+    subprocess.run(["rm", "-rf", str(backup_path)])
+    print("✅ Backup complete:", archive)
+
+def restore_workflow():
+    print("\n🔵 PlaylistDL Restore Workflow")
+    backups = sorted(BACKUP_DIR.glob("backup_*.tar.gz"))
+    if not backups:
+        print("❌ No backups found.")
+        return
+
+    print("Available backups:")
+    for i, b in enumerate(backups, 1):
+        print(f"{i}. {b.name}")
+    choice = get_choice(f"Select backup to restore (1-{len(backups)}): ", [str(i) for i in range(1, len(backups)+1)])
+    selected_backup = backups[int(choice)-1]
+
+    temp_restore = BACKUP_DIR / "temp_restore"
+    subprocess.run(["rm", "-rf", str(temp_restore)])
+    temp_restore.mkdir()
+    subprocess.run(["tar", "-xzf", str(selected_backup), "-C", str(temp_restore)])
+
+    restore_folder = next(temp_restore.glob("backup_*"))
+
+    print("\nChoose restore type:")
+    print("1️⃣  Restore entire PlaylistDL (excluding downloads/ and backups/)")
+    print("2️⃣  Restore specific folder or file")
+    restore_choice = get_choice("Enter 1 or 2: ", ["1","2"])
+
+    if restore_choice == "1":
+        confirm = input("⚠️ This will overwrite existing files! Continue? (y/N): ").strip().lower()
+        if confirm == "y":
+            subprocess.run([
+                "rsync", "-a", "--progress",
+                str(restore_folder) + "/", str(APP_DIR) + "/",
+                "--exclude", "downloads",
+                "--exclude", "backups"
+            ])
+            print("✅ Full restore complete!")
+        else:
+            print("Restore canceled.")
+    elif restore_choice == "2":
+        contents = [f.name for f in restore_folder.iterdir()]
+        print("Contents of backup:", ", ".join(contents))
+        item = input("Enter folder or file name to restore: ").strip()
+        if (restore_folder / item).exists():
+            subprocess.run(["rsync", "-a", "--progress", str(restore_folder / item), str(APP_DIR / item)])
+            print(f"✅ Restore of {item} complete.")
+        else:
+            print("❌ Item not found in backup.")
+
+    subprocess.run(["rm", "-rf", str(temp_restore)])
+
+# -------- Main Execution --------
+mode = None
+if len(sys.argv) > 1:
+    if sys.argv[1] == "--backup":
+        mode = "backup"
+    elif sys.argv[1] == "--restore":
+        mode = "restore"
+
+if not mode:
+    print("==============================")
+    print("PlaylistDL Backup & Restore Interactive")
+    print("==============================")
+    print("Select mode:")
+    print("1️⃣ Backup")
+    print("2️⃣ Restore")
+    choice = get_choice("Enter 1 or 2: ", ["1","2"])
+    mode = "backup" if choice == "1" else "restore"
+
+# Run selected workflow
+if mode == "backup":
+    backup_workflow()
+elif mode == "restore":
+    restore_workflow()

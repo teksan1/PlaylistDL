@@ -1,0 +1,15 @@
+# Ignore Python cache and logs
+*.pyc
+__pycache__/
+*.log
+
+# Ignore downloads and backups
+downloads/
+backups/
+
+# Ignore local user config and cookies
+user_config.json
+cookies.txt
+
+# OS-specific files
+.DS_Store

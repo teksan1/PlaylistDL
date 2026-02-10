@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+import sys
+import os
+import json
+import argparse
+import subprocess
+import re
+import time
+import difflib
+from pathlib import Path
+
+# ------------------ Paths ------------------
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from core import pipeline
+from config import CONFIG, load_config, save_config
+
+load_config()
+
+QUEUE = []
+VERBOSE = False
+
+# ------------------ Helpers ------------------
+def vprint(msg):
+    if VERBOSE:
+        print(msg)
+
+def banner():
+    print("""
+🎧 PlaylistDL — Interactive CLI
+
+USAGE:
+  pldl <url or search>     Add playlist / track
+  pldl -l                 Paste a tracklist (artist - title)
+  pldl -d                 Download queued tracks
+  pldl -o                 Options / settings
+  pldl -c                 Clear queue
+  pldl -h                 Help
+  pldl -e                 Exit
+
+LIST MODE (-l):
+  • Accepts plain text
+  • Accepts numbered / bullet lists
+  • Accepts timestamps
+  • Requires artist match
+  • Searches YouTube (20 results)
+  • Fuzzy title matching + fallback
+
+--------------------------------------------
+""")
+
+def print_queue():
+    if not QUEUE:
+        print("📭 Queue empty")
+        return
+    print("\n🎵 Queue:")
+    for i, t in enumerate(QUEUE, 1):
+        print(f"{i}) {t['title']}")
+
+# ------------------ YouTube Search ------------------
+def yt_search_artist_track(artist, track):
+    query = f"{artist} {track}"
+    query = re.sub(r"[^\w\s]", "", query)
+    query = "+".join(query.split())
+
+    print(f"🔍 Searching: {artist} - {track}")
+
+    try:
+        cmd = f'yt-dlp "ytsearch20:{query}" -J'
+        res = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, check=True
+        )
+        data = json.loads(res.stdout)
+    except Exception as e:
+        print(f"❌ yt-dlp failed: {e}")
+        return None
+
+    best = None
+    best_score = 0.0
+
+    for e in data.get("entries", []):
+        title = e.get("title", "")
+        if artist.lower() not in title.lower():
+            continue
+
+        score = difflib.SequenceMatcher(
+            None, track.lower(), title.lower()
+        ).ratio()
+
+        if score > best_score:
+            best_score = score
+            best = e
+
+    if best and best_score >= 0.45:
+        print(f"✅ Match: {best['title']} ({best_score:.2f})")
+        return {
+            "title": f"{artist} – {best['title']}",
+            "url": best.get("webpage_url"),
+            "source": "youtube"
+        }
+
+    print("⚠️ No strong match, skipping")
+    return None
+
+# ------------------ List Mode ------------------
+def list_mode():
+    print("\n📋 Paste tracklist (artist - title). Empty line to finish:\n")
+    lines = []
+
+    while True:
+        line = input()
+        if not line.strip():
+            break
+        lines.append(line.strip())
+
+    if not lines:
+        print("❌ No input")
+        return
+
+    cleaned = []
+    for l in lines:
+        l = re.sub(r"^\d+[\).\s]+", "", l)
+        l = re.sub(r"^\-+\s*", "", l)
+        l = re.sub(r"\d+:\d+.*", "", l)
+        l = l.strip()
+        if l:
+            cleaned.append(l)
+
+    for line in cleaned:
+        if "-" in line:
+            artist, track = line.split("-", 1)
+        else:
+            print(f"⚠️ Skipping (no artist separator): {line}")
+            continue
+
+        result = yt_search_artist_track(
+            artist.strip(), track.strip()
+        )
+        if result:
+            QUEUE.append(result)
+
+    print_queue()
+
+# ------------------ Options ------------------
+def options_menu():
+    print("\n⚙️ Options:")
+    for k, v in CONFIG.items():
+        print(f"  {k}: {v}")
+    print("\n(Editing options via config file only for now)")
+
+# ------------------ Main Loop ------------------
+def main():
+    global VERBOSE
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("-v", "--verbose", action="store_true")
+    args, _ = parser.parse_known_args()
+
+    VERBOSE = args.verbose
+
+    banner()
+
+    while True:
+        cmd = input("PlaylistDL > ").strip()
+
+        if not cmd:
+            continue
+
+        if cmd in ("-e", "exit", "quit"):
+            break
+
+        if cmd in ("-h", "help"):
+            banner()
+            continue
+
+        if cmd == "-c":
+            QUEUE.clear()
+            print("🧹 Queue cleared")
+            continue
+
+        if cmd == "-o":
+            options_menu()
+            continue
+
+        if cmd == "-l":
+            list_mode()
+            continue
+
+        if cmd == "-d":
+            if not QUEUE:
+                print("📭 Queue empty")
+                continue
+            pipeline.download_multi(QUEUE)
+            QUEUE.clear()
+            continue
+
+        # URL or search fallback
+        results = pipeline.acquire(cmd)
+        if results:
+            QUEUE.extend(results)
+            print_queue()
+        else:
+            print("❌ Nothing found")
+
+if __name__ == "__main__":
+    main()
